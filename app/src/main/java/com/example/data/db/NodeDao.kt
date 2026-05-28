@@ -51,8 +51,11 @@ interface NodeDao {
     @Query("SELECT * FROM todo_items WHERE dateString = :dateString ORDER BY id ASC")
     fun getTodoItemsForDate(dateString: String): Flow<List<TodoItem>>
 
+    @Query("SELECT * FROM todo_items WHERE title = :title AND dateString = :dateString LIMIT 1")
+    suspend fun findTodoByTitleAndDate(title: String, dateString: String): TodoItem?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertTodoItem(todoItem: TodoItem)
+    suspend fun insertTodoItem(todoItem: TodoItem): Long
 
     @Update
     suspend fun updateTodoItem(todoItem: TodoItem)

@@ -9,7 +9,7 @@ import com.example.data.model.MilestoneNode
 import com.example.data.model.NodeMedia
 import com.example.data.model.TodoItem
 
-@Database(entities = [MilestoneNode::class, NodeMedia::class, TodoItem::class], version = 2, exportSchema = false)
+@Database(entities = [MilestoneNode::class, NodeMedia::class, TodoItem::class], version = 3, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun nodeDao(): NodeDao

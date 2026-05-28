@@ -121,8 +121,12 @@ class JourneyRepository(private val nodeDao: NodeDao) {
         return nodeDao.getTodoItemsForDate(dateString)
     }
 
-    suspend fun insertTodoItem(todoItem: TodoItem) {
-        nodeDao.insertTodoItem(todoItem)
+    suspend fun findTodoByTitleAndDate(title: String, dateString: String): TodoItem? {
+        return nodeDao.findTodoByTitleAndDate(title, dateString)
+    }
+
+    suspend fun insertTodoItem(todoItem: TodoItem): Long {
+        return nodeDao.insertTodoItem(todoItem)
     }
 
     suspend fun updateTodoItem(todoItem: TodoItem) {

@@ -1,20 +1,24 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.TodoNotificationHelper
 import com.example.data.db.AppDatabase
 import com.example.data.model.MediaType
 import com.example.data.model.MilestoneNode
 import com.example.data.model.NodeWithMedia
 import com.example.data.model.TodoItem
 import com.example.data.repository.JourneyRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class JourneyViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -37,6 +41,15 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
 
     private val _customAvatarUri = MutableStateFlow(prefs.getString("custom_avatar_uri", "") ?: "")
     val customAvatarUri: StateFlow<String> = _customAvatarUri.asStateFlow()
+
+    private val _cropScale = MutableStateFlow(prefs.getFloat("avatar_crop_scale", 1f))
+    val cropScale: StateFlow<Float> = _cropScale.asStateFlow()
+
+    private val _cropOffsetX = MutableStateFlow(prefs.getFloat("avatar_crop_offset_x", 0f))
+    val cropOffsetX: StateFlow<Float> = _cropOffsetX.asStateFlow()
+
+    private val _cropOffsetY = MutableStateFlow(prefs.getFloat("avatar_crop_offset_y", 0f))
+    val cropOffsetY: StateFlow<Float> = _cropOffsetY.asStateFlow()
 
     fun toggleDarkMode(enabled: Boolean) {
         viewModelScope.launch {
@@ -75,6 +88,26 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             _customAvatarUri.value = uri
             prefs.edit().putString("custom_avatar_uri", uri).apply()
+        }
+    }
+
+    fun updateCropSettings(scale: Float, offsetX: Float, offsetY: Float) {
+        viewModelScope.launch {
+            _cropScale.value = scale
+            _cropOffsetX.value = offsetX
+            _cropOffsetY.value = offsetY
+            prefs.edit()
+                .putFloat("avatar_crop_scale", scale)
+                .putFloat("avatar_crop_offset_x", offsetX)
+                .putFloat("avatar_crop_offset_y", offsetY)
+                .apply()
+        }
+    }
+
+    fun removeCustomAvatar() {
+        viewModelScope.launch {
+            _customAvatarUri.value = ""
+            prefs.edit().putString("custom_avatar_uri", "").apply()
         }
     }
 
@@ -168,21 +201,101 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
-    fun addTodoItem(title: String, dateString: String) {
+    fun addTodoItem(title: String, dateString: String, onAdded: ((TodoItem) -> Unit)? = null) {
         viewModelScope.launch {
-            repository.insertTodoItem(TodoItem(title = title, dateString = dateString, isCompleted = false))
+            val trimmedTitle = title.trim()
+            if (trimmedTitle.isEmpty()) return@launch
+
+            // Check if duplicate exists on this date
+            val existing = repository.findTodoByTitleAndDate(trimmedTitle, dateString)
+            if (existing != null) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        getApplication(),
+                        "You have already added that item to the to-do list.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                return@launch
+            }
+
+            // Attempt to auto-parse time (e.g. "at 9:00 AM")
+            val parsedTime = TodoNotificationHelper.parseTimePlaceholder(trimmedTitle)
+            val newTodo = if (parsedTime != null) {
+                TodoItem(
+                    title = trimmedTitle,
+                    dateString = dateString,
+                    isCompleted = false,
+                    alertTime = parsedTime.parsedTime24h,
+                    isAlertEnabled = true
+                )
+            } else {
+                TodoItem(
+                    title = trimmedTitle,
+                    dateString = dateString,
+                    isCompleted = false
+                )
+            }
+
+            val newId = repository.insertTodoItem(newTodo)
+            val savedTodo = newTodo.copy(id = newId)
+            
+            // Schedule the alarm if parsed time was found
+            if (savedTodo.isAlertEnabled && savedTodo.alertTime != null) {
+                TodoNotificationHelper.scheduleTodoAlarm(getApplication(), savedTodo)
+            }
+
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    getApplication(),
+                    "Item added to the list!",
+                    Toast.LENGTH_SHORT
+                ).show()
+                onAdded?.invoke(savedTodo)
+            }
         }
     }
 
     fun toggleTodoItem(todo: TodoItem) {
         viewModelScope.launch {
-            repository.updateTodoItem(todo.copy(isCompleted = !todo.isCompleted))
+            val updated = todo.copy(isCompleted = !todo.isCompleted)
+            repository.updateTodoItem(updated)
+            if (updated.isCompleted) {
+                TodoNotificationHelper.cancelTodoAlarm(getApplication(), updated)
+            } else if (updated.isAlertEnabled) {
+                TodoNotificationHelper.scheduleTodoAlarm(getApplication(), updated)
+            }
         }
     }
 
     fun deleteTodoItem(todo: TodoItem) {
         viewModelScope.launch {
+            TodoNotificationHelper.cancelTodoAlarm(getApplication(), todo)
             repository.deleteTodoItem(todo)
+        }
+    }
+
+    fun updateTodoItemAlarm(todo: TodoItem, title: String, alertTime: String?, offsetMinutes: Int, isEnabled: Boolean) {
+        viewModelScope.launch {
+            val updated = todo.copy(
+                title = title.trim(),
+                alertTime = alertTime,
+                alertOffsetMinutes = offsetMinutes,
+                isAlertEnabled = isEnabled
+            )
+            repository.updateTodoItem(updated)
+            if (isEnabled && alertTime != null) {
+                TodoNotificationHelper.scheduleTodoAlarm(getApplication(), updated)
+            } else {
+                TodoNotificationHelper.cancelTodoAlarm(getApplication(), updated)
+            }
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    getApplication(),
+                    if (isEnabled) "Alarm configuration saved!" else "Alarm notification muted",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
         }
     }
 }

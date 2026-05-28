@@ -13,6 +13,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
@@ -30,6 +34,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.drawscope.Stroke
 import kotlin.math.sin
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -65,9 +72,13 @@ import com.example.data.model.MilestoneNode
 import com.example.data.model.NodeMedia
 import com.example.data.model.NodeWithMedia
 import com.example.data.model.TodoItem
+import com.example.TodoNotificationHelper
+import androidx.compose.ui.text.withStyle
+import androidx.compose.foundation.text.BasicTextField
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.JourneyViewModel
 import java.text.SimpleDateFormat
+import kotlinx.coroutines.launch
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
@@ -81,6 +92,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import android.widget.VideoView
 import androidx.compose.runtime.key
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.ui.input.pointer.pointerInput
 
 fun getDayLabel(id: Int): String {
@@ -175,15 +188,7 @@ fun JourneyApp(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .background(
-                    Brush.verticalGradient(
-                        colors = if (isDark) {
-                            listOf(SpaceDarkBg, Color(0xFF070515))
-                        } else {
-                            listOf(SpaceDarkBg, Color(0xFFF3EEFD))
-                        }
-                    )
-                )
+                .background(if (isDark) Color.Black else Color.White)
         ) {
             when (selectedTab) {
                 0 -> TodoCalendarScreen(viewModel = viewModel)
@@ -216,23 +221,72 @@ fun JourneyApp(
 // -------------------------------------------------------------
 @Composable
 fun TodoCalendarScreen(viewModel: JourneyViewModel) {
-    var weekOffset by remember { mutableStateOf(0) }
-    
     val todayId = remember {
         SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
     }
     var selectedDateString by remember { mutableStateOf(todayId) }
-    
-    val daysOfWeek = remember(weekOffset) {
-        getDaysOfWeek(weekOffset)
+
+    var selectedYear by remember { mutableStateOf(Calendar.getInstance().get(Calendar.YEAR)) }
+    var selectedMonth by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MONTH)) }
+
+    // Sync selectedMonth and selectedYear when selectedDateString changes (e.g., from Today button click)
+    LaunchedEffect(selectedDateString) {
+        try {
+            val date = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).parse(selectedDateString)
+            if (date != null) {
+                val cal = Calendar.getInstance()
+                cal.time = date
+                selectedYear = cal.get(Calendar.YEAR)
+                selectedMonth = cal.get(Calendar.MONTH)
+            }
+        } catch (e: Exception) {}
     }
-    
-    val monthTitle = remember(weekOffset) {
+
+    val calendarDays = remember(selectedYear, selectedMonth) {
+        getFullMonthDays(selectedYear, selectedMonth)
+    }
+
+    val chunkedRows = remember(calendarDays) {
+        calendarDays.chunked(7)
+    }
+
+    val isDark by viewModel.isDarkMode.collectAsState()
+
+    val monthYearTitle = remember(selectedYear, selectedMonth) {
         val cal = Calendar.getInstance()
-        cal.add(Calendar.WEEK_OF_YEAR, weekOffset)
-        cal.set(Calendar.DAY_OF_WEEK, Calendar.SUNDAY)
-        val sdf = SimpleDateFormat("MMMM yyyy", Locale.getDefault())
-        sdf.format(cal.time)
+        cal.set(Calendar.YEAR, selectedYear)
+        cal.set(Calendar.MONTH, selectedMonth)
+        SimpleDateFormat("MMMM yyyy", Locale.getDefault()).format(cal.time)
+    }
+
+    val themeGradient = remember(ActiveGreen) {
+        Brush.verticalGradient(
+            listOf(
+                ActiveGreen,
+                Color(
+                    red = (ActiveGreen.red * 0.7f).coerceIn(0f, 1f),
+                    green = (ActiveGreen.green * 0.7f).coerceIn(0f, 1f),
+                    blue = (ActiveGreen.blue * 0.7f).coerceIn(0f, 1f),
+                    alpha = 1f
+                )
+            )
+        )
+    }
+
+    var showWheelPickerDialog by remember { mutableStateOf(false) }
+
+    fun adjustMonth(delta: Int) {
+        var newMonth = selectedMonth + delta
+        var newYear = selectedYear
+        if (newMonth < 0) {
+            newMonth = 11
+            newYear -= 1
+        } else if (newMonth > 11) {
+            newMonth = 0
+            newYear += 1
+        }
+        selectedMonth = newMonth
+        selectedYear = newYear
     }
 
     // Task Items for chosen date
@@ -242,6 +296,9 @@ fun TodoCalendarScreen(viewModel: JourneyViewModel) {
     val todoItems by todoItemsState.collectAsState()
 
     var newTaskTitle by remember { mutableStateOf("") }
+    var editingTodo by remember { mutableStateOf<TodoItem?>(null) }
+    var showNotificationPromptForTask by remember { mutableStateOf<String?>(null) }
+    val focusRequester = remember { FocusRequester() }
 
     Column(
         modifier = Modifier
@@ -268,88 +325,294 @@ fun TodoCalendarScreen(viewModel: JourneyViewModel) {
         
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Week strip container
+        // Month Calendar Container
         Surface(
             color = SpaceCardBg,
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(20.dp),
             border = BorderStroke(1.dp, SpaceCardBorder),
             shadowElevation = 2.dp
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                // Header month slider
+                // Header Month Control & Wheel Picker Trigger
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = { weekOffset-- }) {
-                        Icon(Icons.Default.ArrowBackIosNew, contentDescription = "Prev Week", tint = ActiveGreen, modifier = Modifier.size(16.dp))
-                    }
-                    Text(
-                        text = monthTitle.uppercase(Locale.getDefault()),
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = TextLight,
-                            letterSpacing = 0.5.sp
+                    IconButton(
+                        onClick = { adjustMonth(-1) },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ChevronLeft,
+                            contentDescription = "Prev Month",
+                            tint = ActiveGreen
                         )
-                    )
-                    IconButton(onClick = { weekOffset++ }) {
-                        Icon(Icons.Default.ArrowForwardIos, contentDescription = "Next Week", tint = ActiveGreen, modifier = Modifier.size(16.dp))
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showWheelPickerDialog = true }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = monthYearTitle.uppercase(Locale.getDefault()),
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = TextLight,
+                                letterSpacing = 0.5.sp
+                            )
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(
+                            imageVector = Icons.Default.ArrowDropDown,
+                            contentDescription = "Open date picker scroll wheel",
+                            tint = ActiveGreen,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { adjustMonth(1) },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = "Next Month",
+                            tint = ActiveGreen
+                        )
                     }
                 }
-                
-                Spacer(modifier = Modifier.height(8.dp))
-                
-                // Days grid row (7 Days)
+
+                // Today button
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 6.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            selectedDateString = todayId
+                        },
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = ActiveGreen
+                        ),
+                        border = BorderStroke(1.dp, ActiveGreen.copy(alpha = 0.4f)),
+                        shape = RoundedCornerShape(20.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
+                        modifier = Modifier
+                            .height(28.dp)
+                            .testTag("go_to_today_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MyLocation,
+                            contentDescription = "Today Icon",
+                            tint = ActiveGreen,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "TODAY",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.sp,
+                                letterSpacing = 0.5.sp
+                            )
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = SpaceCardBorder.copy(alpha = 0.4f), modifier = Modifier.padding(vertical = 8.dp))
+
+                // Weekday Labels row (S, M, T, W, T, F, S)
+                val weekdays = listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    daysOfWeek.forEach { day ->
-                        val isSelected = day.dateId == selectedDateString
-                        val isToday = day.dateId == todayId
-                        
+                    weekdays.forEach { dayLabel ->
                         Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 2.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .then(
-                                    if (isSelected) {
-                                        Modifier.background(Brush.verticalGradient(listOf(ActiveGreen, AccentCyan)))
-                                    } else if (isToday) {
-                                        Modifier.background(ActiveGreen.copy(alpha = 0.08f))
-                                    } else {
-                                        Modifier
-                                    }
-                                )
-                                .clickable { selectedDateString = day.dateId }
-                                .border(
-                                    width = 1.dp,
-                                    color = if (isSelected) Color.Transparent else if (isToday) ActiveGreen else SpaceCardBorder.copy(alpha = 0.6f),
-                                    shape = RoundedCornerShape(12.dp)
-                                )
-                                .padding(vertical = 10.dp),
+                            modifier = Modifier.weight(1f),
                             contentAlignment = Alignment.Center
                         ) {
+                            Text(
+                                text = dayLabel.uppercase(),
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = ActiveGreen,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 11.sp
+                                )
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Monthly Calendar Cell Grid Rows (usually 4 to 6 rows)
+                chunkedRows.forEach { weekRow ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        weekRow.forEach { day ->
+                            val isSelected = day.dateId == selectedDateString
+                            val isToday = day.dateId == todayId
+
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .aspectRatio(1f)
+                                    .padding(3.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .then(
+                                        if (isToday) {
+                                            Modifier.background(themeGradient)
+                                        } else if (isSelected) {
+                                            Modifier.background(ActiveGreen.copy(alpha = 0.15f))
+                                        } else {
+                                            Modifier
+                                        }
+                                    )
+                                    .border(
+                                        width = if (isSelected) 2.dp else if (isToday) 0.dp else 1.dp,
+                                        color = if (isSelected) ActiveGreen else if (isToday) Color.Transparent else SpaceCardBorder.copy(alpha = 0.4f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    .clickable { selectedDateString = day.dateId },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = day.dayNumber,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        color = if (isToday) (if (ActiveGreen == Color(0xFFFFFD38) || ActiveGreen == Color(0xFFF59E0B)) Color.Black else Color.White)
+                                                else if (isSelected) ActiveGreen 
+                                                else if (day.isCurrentMonth) TextLight 
+                                                else TextMuted.copy(alpha = 0.35f),
+                                        fontWeight = if (isToday || isSelected) FontWeight.Black else FontWeight.Normal
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Show Wheel Picker Dialog
+        if (showWheelPickerDialog) {
+            Dialog(onDismissRequest = { showWheelPickerDialog = false }) {
+                Surface(
+                    color = SpaceCardBg,
+                    shape = RoundedCornerShape(24.dp),
+                    border = BorderStroke(1.dp, SpaceCardBorder),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "📅 Select Calendar View",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                color = TextLight,
+                                fontWeight = FontWeight.Black
+                            ),
+                            modifier = Modifier.padding(bottom = 20.dp)
+                        )
+
+                        var tempMonth by remember { mutableStateOf(selectedMonth) }
+                        var tempYear by remember { mutableStateOf(selectedYear) }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Month Scroll Wheel
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
-                                    text = day.dayName.substring(0, 3).uppercase(),
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        color = if (isSelected) Color.White else LockedText,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 10.sp
-                                    )
+                                    text = "Month",
+                                    style = MaterialTheme.typography.labelMedium.copy(color = TextMuted),
+                                    modifier = Modifier.padding(bottom = 6.dp)
                                 )
-                                Spacer(modifier = Modifier.height(4.dp))
+                                val months = listOf(
+                                    "January", "February", "March", "April", "May", "June",
+                                    "July", "August", "September", "October", "November", "December"
+                                )
+                                WheelScrollPicker(
+                                    items = months,
+                                    selectedIndex = tempMonth,
+                                    onItemSelected = { tempMonth = it }
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(16.dp))
+
+                            // Year Scroll Wheel
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
-                                    text = day.dateNumber,
-                                    style = MaterialTheme.typography.bodyLarge.copy(
-                                        color = if (isSelected) Color.White else TextLight,
-                                        fontWeight = FontWeight.Black,
-                                        fontSize = 16.sp
-                                    )
+                                    text = "Year",
+                                    style = MaterialTheme.typography.labelMedium.copy(color = TextMuted),
+                                    modifier = Modifier.padding(bottom = 6.dp)
                                 )
+                                val years = (2020..2035).map { it.toString() }
+                                val yearIndex = (tempYear - 2020).coerceIn(0, years.size - 1)
+                                WheelScrollPicker(
+                                    items = years,
+                                    selectedIndex = yearIndex,
+                                    onItemSelected = { index ->
+                                        tempYear = 2020 + index
+                                    }
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { showWheelPickerDialog = false },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, SpaceCardBorder)
+                            ) {
+                                Text("Cancel", color = TextLight, fontWeight = FontWeight.SemiBold)
+                            }
+
+                            Button(
+                                onClick = {
+                                    selectedMonth = tempMonth
+                                    selectedYear = tempYear
+                                    // Set selected day starting from first day of month
+                                    val cal = Calendar.getInstance()
+                                    cal.set(Calendar.YEAR, selectedYear)
+                                    cal.set(Calendar.MONTH, selectedMonth)
+                                    cal.set(Calendar.DAY_OF_MONTH, 1)
+                                    selectedDateString = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(cal.time)
+                                    showWheelPickerDialog = false
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = ActiveGreen),
+                                modifier = Modifier
+                                    .weight(1.2f)
+                                    .testTag("apply_month_year_picker"),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text("Select", color = Color.Black, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -394,11 +657,13 @@ fun TodoCalendarScreen(viewModel: JourneyViewModel) {
             color = SpaceCardBg,
             shape = RoundedCornerShape(14.dp),
             border = BorderStroke(1.dp, SpaceCardBorder),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { focusRequester.requestFocus() }
         ) {
             Row(
                 modifier = Modifier
-                    .padding(8.dp)
+                    .padding(horizontal = 4.dp, vertical = 2.dp)
                     .fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -408,8 +673,26 @@ fun TodoCalendarScreen(viewModel: JourneyViewModel) {
                     placeholder = { Text("What needs to be done?", fontSize = 14.sp) },
                     modifier = Modifier
                         .weight(1f)
+                        .focusRequester(focusRequester)
                         .testTag("todo_input_field"),
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            val trimmed = newTaskTitle.trim()
+                            if (trimmed.isNotBlank()) {
+                                val parsed = TodoNotificationHelper.parseTimePlaceholder(trimmed)
+                                if (parsed != null) {
+                                    viewModel.addTodoItem(trimmed, selectedDateString)
+                                    newTaskTitle = ""
+                                } else {
+                                    showNotificationPromptForTask = trimmed
+                                }
+                            }
+                        }
+                    ),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = Color.Transparent,
                         unfocusedBorderColor = Color.Transparent,
@@ -423,16 +706,24 @@ fun TodoCalendarScreen(viewModel: JourneyViewModel) {
                 
                 Button(
                     onClick = {
-                        if (newTaskTitle.isNotBlank()) {
-                            viewModel.addTodoItem(newTaskTitle.trim(), selectedDateString)
-                            newTaskTitle = ""
+                        val trimmed = newTaskTitle.trim()
+                        if (trimmed.isNotBlank()) {
+                            val parsed = TodoNotificationHelper.parseTimePlaceholder(trimmed)
+                            if (parsed != null) {
+                                viewModel.addTodoItem(trimmed, selectedDateString)
+                                newTaskTitle = ""
+                            } else {
+                                showNotificationPromptForTask = trimmed
+                            }
+                        } else {
+                            focusRequester.requestFocus()
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = ActiveGreen),
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.testTag("add_todo_btn")
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = "Add Task")
+                    Icon(Icons.Default.Add, contentDescription = "Add Task", tint = Color.Black)
                 }
             }
         }
@@ -520,17 +811,122 @@ fun TodoCalendarScreen(viewModel: JourneyViewModel) {
                             
                             Spacer(modifier = Modifier.width(12.dp))
                             
-                            // Task Title Text
-                            Text(
-                                text = item.title,
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (item.isCompleted) TextMuted else TextLight,
-                                    textDecoration = if (item.isCompleted) androidx.compose.ui.text.style.TextDecoration.LineThrough else null
-                                ),
-                                modifier = Modifier.weight(1f)
-                            )
+                            // Task Title Text Column (with highlights & alarm subtitled chips)
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                val parsedTime = TodoNotificationHelper.parseTimePlaceholder(item.title)
+                                val annotatedTitle = remember(item.title, parsedTime) {
+                                    if (parsedTime != null && parsedTime.timeStartIndex in item.title.indices && parsedTime.timeEndIndex <= item.title.length) {
+                                        androidx.compose.ui.text.buildAnnotatedString {
+                                            append(item.title.substring(0, parsedTime.timeStartIndex))
+                                            withStyle(androidx.compose.ui.text.SpanStyle(color = ActiveGreen, fontWeight = FontWeight.Black)) {
+                                                append(item.title.substring(parsedTime.timeStartIndex, parsedTime.timeEndIndex))
+                                            }
+                                            append(item.title.substring(parsedTime.timeEndIndex))
+                                        }
+                                    } else {
+                                        androidx.compose.ui.text.AnnotatedString(item.title)
+                                    }
+                                }
+
+                                Text(
+                                    text = annotatedTitle,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (item.isCompleted) TextMuted else TextLight,
+                                        textDecoration = if (item.isCompleted) androidx.compose.ui.text.style.TextDecoration.LineThrough else null
+                                    )
+                                )
+
+                                if (!item.alertTime.isNullOrEmpty()) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        val displayGoal = TodoNotificationHelper.formatAlertTime12h(item.alertTime)
+                                        if (item.isAlertEnabled && !item.isCompleted) {
+                                            val calTime = Calendar.getInstance()
+                                            try {
+                                                val parts = item.alertTime.split(":")
+                                                calTime.set(Calendar.HOUR_OF_DAY, parts[0].toInt())
+                                                calTime.set(Calendar.MINUTE, parts[1].toInt())
+                                                calTime.add(Calendar.MINUTE, -item.alertOffsetMinutes)
+                                            } catch (e: Exception) {}
+                                            val triggerTimeStr = String.format(Locale.getDefault(), "%02d:%02d", calTime.get(Calendar.HOUR_OF_DAY), calTime.get(Calendar.MINUTE))
+                                            val displayTrigger = TodoNotificationHelper.formatAlertTime12h(triggerTimeStr)
+
+                                            Surface(
+                                                color = ActiveGreen.copy(alpha = 0.15f),
+                                                shape = RoundedCornerShape(6.dp),
+                                                border = BorderStroke(1.dp, ActiveGreen.copy(alpha = 0.4f))
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.NotificationsActive,
+                                                        contentDescription = "Alarm Active",
+                                                        tint = ActiveGreen,
+                                                        modifier = Modifier.size(11.dp)
+                                                    )
+                                                    Text(
+                                                        text = "$displayTrigger (Goal: $displayGoal)",
+                                                        style = MaterialTheme.typography.labelSmall.copy(
+                                                            color = ActiveGreen,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        } else {
+                                            Surface(
+                                                color = SpaceCardBorder.copy(alpha = 0.2f),
+                                                shape = RoundedCornerShape(6.dp),
+                                                border = BorderStroke(1.dp, SpaceCardBorder.copy(alpha = 0.4f))
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.NotificationsOff,
+                                                        contentDescription = "Alarm Off",
+                                                        tint = TextMuted,
+                                                        modifier = Modifier.size(11.dp)
+                                                    )
+                                                    Text(
+                                                        text = if (item.isCompleted) "Completed (Muted)" else "Alert Off ($displayGoal)",
+                                                        style = MaterialTheme.typography.labelSmall.copy(
+                                                            color = TextMuted,
+                                                            fontWeight = FontWeight.Normal
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             
+                            // Edit custom alarm settings icon
+                            IconButton(
+                                onClick = { editingTodo = item },
+                                modifier = Modifier.testTag("edit_todo_${item.id}")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Notifications,
+                                    contentDescription = "Edit Alarm",
+                                    tint = ActiveGreen.copy(alpha = 0.8f),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+
                             // Trash Delete Icon
                             IconButton(
                                 onClick = { viewModel.deleteTodoItem(item) },
@@ -550,6 +946,92 @@ fun TodoCalendarScreen(viewModel: JourneyViewModel) {
         }
         
         Spacer(modifier = Modifier.height(48.dp))
+        
+        // Show Dialog overlay for alarm configuring
+        editingTodo?.let { todoToEdit ->
+            androidx.compose.runtime.key(todoToEdit.id) {
+                TodoEditAlarmDialog(
+                    todo = todoToEdit,
+                    onDismiss = { editingTodo = null },
+                    onSave = { updatedTitle, alertTime, offset, isEnabled ->
+                        viewModel.updateTodoItemAlarm(todoToEdit, updatedTitle, alertTime, offset, isEnabled)
+                        editingTodo = null
+                    }
+                )
+            }
+        }
+
+        // Show Dialog overlay to choose whether to set alarm or mute
+        showNotificationPromptForTask?.let { taskTitleToCreate ->
+            Dialog(onDismissRequest = { showNotificationPromptForTask = null }) {
+                Surface(
+                    color = SpaceCardBg,
+                    shape = RoundedCornerShape(20.dp),
+                    border = BorderStroke(1.dp, SpaceCardBorder),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "🔔 Configure Alarm?",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                color = TextLight,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+
+                        Text(
+                            text = "No alert time was detected in your task. Would you like to schedule an alert notification or keep it muted?",
+                            style = MaterialTheme.typography.bodyMedium.copy(color = TextMuted),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier.padding(bottom = 20.dp)
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            // Button 1: Keep Muted
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.addTodoItem(taskTitleToCreate, selectedDateString)
+                                    newTaskTitle = ""
+                                    showNotificationPromptForTask = null
+                                },
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextLight),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f),
+                                border = BorderStroke(1.dp, SpaceCardBorder)
+                            ) {
+                                Text("Keep Muted", fontWeight = FontWeight.SemiBold)
+                            }
+
+                            // Button 2: Set Alert Time
+                            Button(
+                                onClick = {
+                                    viewModel.addTodoItem(taskTitleToCreate, selectedDateString, onAdded = { addedItem ->
+                                        // Immediately pop up the alarm edit dialog for this new item!
+                                        editingTodo = addedItem
+                                    })
+                                    newTaskTitle = ""
+                                    showNotificationPromptForTask = null
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = ActiveGreen),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1.2f)
+                            ) {
+                                Text("Set Alert", color = Color.Black, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -585,6 +1067,548 @@ fun getDaysOfWeek(offsetWeek: Int): List<CalendarDay> {
 }
 
 // -------------------------------------------------------------
+// MONTH CUSTOM CALENDAR HELPERS & SCROLL PICKERS
+// -------------------------------------------------------------
+data class CalendarMonthDay(
+    val dayNumber: String,
+    val dateId: String,
+    val isCurrentMonth: Boolean,
+    val date: Date
+)
+
+fun getFullMonthDays(year: Int, month: Int): List<CalendarMonthDay> {
+    val days = mutableListOf<CalendarMonthDay>()
+    val cal = Calendar.getInstance()
+    cal.clear()
+    cal.set(Calendar.YEAR, year)
+    cal.set(Calendar.MONTH, month)
+    cal.set(Calendar.DAY_OF_MONTH, 1)
+
+    val firstDayOfWeek = cal.get(Calendar.DAY_OF_WEEK)
+    val leadingDaysCount = firstDayOfWeek - Calendar.SUNDAY
+
+    val prevCal = cal.clone() as Calendar
+    prevCal.add(Calendar.DAY_OF_MONTH, -leadingDaysCount)
+    val sdfId = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+    val sdfDate = SimpleDateFormat("d", Locale.getDefault())
+
+    for (i in 0 until leadingDaysCount) {
+        days.add(
+            CalendarMonthDay(
+                dayNumber = sdfDate.format(prevCal.time),
+                dateId = sdfId.format(prevCal.time),
+                isCurrentMonth = false,
+                date = prevCal.time
+            )
+        )
+        prevCal.add(Calendar.DAY_OF_MONTH, 1)
+    }
+
+    val daysInMonth = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
+    for (i in 1..daysInMonth) {
+        days.add(
+            CalendarMonthDay(
+                dayNumber = i.toString(),
+                dateId = sdfId.format(cal.time),
+                isCurrentMonth = true,
+                date = cal.time
+            )
+        )
+        cal.add(Calendar.DAY_OF_MONTH, 1)
+    }
+
+    val totalCellsNeeded = if (days.size <= 28) 28 else if (days.size <= 35) 35 else 42
+    val trailingDaysCount = totalCellsNeeded - days.size
+    for (i in 1..trailingDaysCount) {
+        days.add(
+            CalendarMonthDay(
+                dayNumber = i.toString(),
+                dateId = sdfId.format(cal.time),
+                isCurrentMonth = false,
+                date = cal.time
+            )
+        )
+        cal.add(Calendar.DAY_OF_MONTH, 1)
+    }
+
+    return days
+}
+
+@Composable
+fun WheelScrollPicker(
+    items: List<String>,
+    selectedIndex: Int,
+    onItemSelected: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    widthDps: androidx.compose.ui.unit.Dp = 110.dp
+) {
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+    val latestSelectedIndex by androidx.compose.runtime.rememberUpdatedState(selectedIndex)
+
+    // Scroll to the target selectedIndex when it updates externally (and list is not actively being dragged/flung)
+    LaunchedEffect(selectedIndex) {
+        if (!listState.isScrollInProgress && listState.firstVisibleItemIndex != selectedIndex) {
+            listState.scrollToItem(selectedIndex)
+        }
+    }
+
+    // Handles native scroll snapping event when scroll settles
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (!listState.isScrollInProgress) {
+            val targetIndex = listState.firstVisibleItemIndex.coerceIn(items.indices)
+            if (targetIndex != latestSelectedIndex) {
+                onItemSelected(targetIndex)
+            }
+        }
+    }
+
+    val snapFlingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
+
+    Box(
+        modifier = modifier
+            .height(114.dp)
+            .width(widthDps)
+            .background(SpaceCardBg.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+            .border(1.dp, SpaceCardBorder.copy(alpha = 0.8f), RoundedCornerShape(12.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(38.dp)
+                .background(ActiveGreen.copy(alpha = 0.12f))
+                .border(1.5.dp, ActiveGreen, RoundedCornerShape(8.dp))
+        )
+
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(vertical = 38.dp),
+            flingBehavior = snapFlingBehavior,
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            items(items.size) { index ->
+                val isSelected = index == selectedIndex
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(38.dp)
+                        .clickable {
+                            coroutineScope.launch {
+                                listState.animateScrollToItem(index)
+                            }
+                            onItemSelected(index)
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = items[index],
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = if (isSelected) FontWeight.Black else FontWeight.Normal,
+                            color = if (isSelected) ActiveGreen else TextMuted,
+                            fontSize = if (isSelected) 15.sp else 13.sp
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+fun TodoEditAlarmDialog(
+    todo: TodoItem,
+    onDismiss: () -> Unit,
+    onSave: (title: String, alertTime: String?, offsetMinutes: Int, isEnabled: Boolean) -> Unit
+) {
+    var editTitle by remember { mutableStateOf(todo.title) }
+    var isAlertEnabled by remember { mutableStateOf(todo.isAlertEnabled) }
+    
+    // Convert 24-hour HH:mm to 12-hour values
+    val initialTime = todo.alertTime ?: "09:00"
+    val parts = initialTime.split(":")
+    val hour24 = parts.getOrNull(0)?.toIntOrNull() ?: 9
+    val minute = parts.getOrNull(1)?.toIntOrNull() ?: 0
+
+    val isPm = hour24 >= 12
+    val hour12 = when {
+        hour24 == 0 -> 12
+        hour24 > 12 -> hour24 - 12
+        else -> hour24
+    }
+
+    var hour12SelectedIndex by remember { mutableStateOf(hour12 - 1) } // Index 0..11 holds 1..12
+    var minuteSelectedIndex by remember { mutableStateOf(minute) } // Index 0..59 holds 00..59
+    var amPmSelectedIndex by remember { mutableStateOf(if (isPm) 1 else 0) } // Index 0 holds AM, 1 PM
+
+    // Custom offset in minutes
+    var offsetMinutes by remember { mutableStateOf(todo.alertOffsetMinutes) }
+    var customOffsetInputStr by remember { mutableStateOf(todo.alertOffsetMinutes.toString()) }
+
+    val presetOffsets = listOf(0, 5, 10, 15, 30, 45, 60, 90, 120)
+
+    val context = LocalContext.current
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (!isGranted) {
+            Toast.makeText(context, "Notifications are disabled. Alarms might not show on screen.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    LaunchedEffect(isAlertEnabled) {
+        if (isAlertEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            color = SpaceCardBg,
+            shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.dp, SpaceCardBorder),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(24.dp)
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "⚙️ Configure Task & Alert",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        color = TextLight,
+                        fontWeight = FontWeight.Black
+                    ),
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+
+                // Editable Title
+                OutlinedTextField(
+                    value = editTitle,
+                    onValueChange = { editTitle = it },
+                    label = { Text("Task Description", color = TextMuted) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TextLight,
+                        unfocusedTextColor = TextLight,
+                        focusedBorderColor = ActiveGreen,
+                        unfocusedBorderColor = SpaceCardBorder,
+                        cursorColor = ActiveGreen,
+                        focusedLabelColor = ActiveGreen,
+                        unfocusedLabelColor = TextMuted
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Toggle Alert Switch/Row
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(SpaceCardBorder.copy(alpha = 0.2f))
+                        .clickable { isAlertEnabled = !isAlertEnabled }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (isAlertEnabled) Icons.Default.NotificationsActive else Icons.Default.NotificationsOff,
+                            contentDescription = "Alert status icon",
+                            tint = if (isAlertEnabled) ActiveGreen else TextMuted,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Task Alert Notification",
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextLight
+                                )
+                            )
+                            Text(
+                                text = if (isAlertEnabled) "Alarms are active" else "Alarms are muted",
+                                style = MaterialTheme.typography.labelSmall.copy(color = TextMuted)
+                            )
+                        }
+                    }
+                    Switch(
+                        checked = isAlertEnabled,
+                        onCheckedChange = { isAlertEnabled = it },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = ActiveGreen,
+                            uncheckedThumbColor = TextMuted,
+                            uncheckedTrackColor = SpaceCardBorder
+                        )
+                    )
+                }
+
+                if (isAlertEnabled) {
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Text(
+                        text = "Set Task Target Time",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = TextLight
+                        ),
+                        modifier = Modifier
+                            .align(Alignment.Start)
+                            .padding(bottom = 8.dp)
+                    )
+
+                    // 12-Hour AM/PM Roll Wheel Pickers
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Hour
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Hour", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            WheelScrollPicker(
+                                items = (1..12).map { it.toString() },
+                                selectedIndex = hour12SelectedIndex,
+                                onItemSelected = { hour12SelectedIndex = it },
+                                widthDps = 66.dp
+                            )
+                        }
+
+                        Text(
+                            text = ":",
+                            style = MaterialTheme.typography.titleLarge.copy(color = ActiveGreen, fontWeight = FontWeight.Black),
+                            modifier = Modifier.padding(horizontal = 6.dp).padding(top = 16.dp)
+                        )
+
+                        // Minute
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Minute", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            WheelScrollPicker(
+                                items = (0..59).map { String.format(Locale.getDefault(), "%02d", it) },
+                                selectedIndex = minuteSelectedIndex,
+                                onItemSelected = { minuteSelectedIndex = it },
+                                widthDps = 66.dp
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        // AM/PM
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("AM/PM", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            WheelScrollPicker(
+                                items = listOf("AM", "PM"),
+                                selectedIndex = amPmSelectedIndex,
+                                onItemSelected = { amPmSelectedIndex = it },
+                                widthDps = 66.dp
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Text(
+                        text = "Alert Timing Offset",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = TextLight
+                        ),
+                        modifier = Modifier
+                            .align(Alignment.Start)
+                            .padding(bottom = 8.dp)
+                    )
+
+                    // Custom input row with minus and plus buttons for precise offset selection
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(SpaceCardBorder.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+                            .border(1.dp, SpaceCardBorder, RoundedCornerShape(12.dp))
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = {
+                                    if (offsetMinutes > 0) {
+                                        offsetMinutes--
+                                        customOffsetInputStr = offsetMinutes.toString()
+                                    }
+                                },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(Icons.Default.Remove, "Decrease Offset", tint = ActiveGreen)
+                            }
+                            
+                            // Editable Text Field for Custom Minutes
+                            BasicTextField(
+                                value = customOffsetInputStr,
+                                onValueChange = { newValue ->
+                                    val cleaned = newValue.filter { it.isDigit() }
+                                    customOffsetInputStr = cleaned
+                                    val parsed = cleaned.toIntOrNull()
+                                    if (parsed != null) {
+                                        offsetMinutes = parsed
+                                    }
+                                },
+                                textStyle = MaterialTheme.typography.titleMedium.copy(
+                                    color = ActiveGreen,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                ),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                cursorBrush = androidx.compose.ui.graphics.SolidColor(ActiveGreen),
+                                modifier = Modifier
+                                    .width(60.dp)
+                                    .padding(horizontal = 4.dp)
+                            )
+
+                            IconButton(
+                                onClick = {
+                                    offsetMinutes++
+                                    customOffsetInputStr = offsetMinutes.toString()
+                                },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(Icons.Default.Add, "Increase Offset", tint = ActiveGreen)
+                            }
+                            
+                            Spacer(modifier = Modifier.width(6.dp))
+                            
+                            Text("minutes before", style = MaterialTheme.typography.bodyMedium.copy(color = TextLight))
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Human readable helper description
+                    val readableOffset = remember(offsetMinutes) {
+                        if (offsetMinutes == 0) {
+                            "Alert will go off at the exact time"
+                        } else {
+                            val hrs = offsetMinutes / 60
+                            val mins = offsetMinutes % 60
+                            when {
+                                hrs > 0 && mins > 0 -> "Alert will go off $hrs hr $mins min before the task"
+                                hrs > 0 -> "Alert will go off $hrs hr before the task"
+                                else -> "Alert will go off $offsetMinutes min before the task"
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = readableOffset,
+                        style = MaterialTheme.typography.labelSmall.copy(color = ActiveGreen, fontWeight = FontWeight.Bold),
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+
+                    // Presets horizontal list
+                    Text(
+                        text = "Quick Presets",
+                        style = MaterialTheme.typography.labelSmall.copy(color = TextMuted),
+                        modifier = Modifier
+                            .align(Alignment.Start)
+                            .padding(bottom = 6.dp)
+                    )
+
+                    androidx.compose.foundation.lazy.LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(presetOffsets.size) { idx ->
+                            val pMinutes = presetOffsets[idx]
+                            val isSelected = pMinutes == offsetMinutes
+                            val label = when (pMinutes) {
+                                0 -> "Exact Time"
+                                60 -> "1 Hour"
+                                90 -> "1h 30m"
+                                120 -> "2 Hours"
+                                else -> "$pMinutes mins"
+                            }
+                            Surface(
+                                color = if (isSelected) ActiveGreen.copy(alpha = 0.25f) else SpaceCardBg.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(16.dp),
+                                border = BorderStroke(
+                                    width = 1.dp,
+                                    color = if (isSelected) ActiveGreen else SpaceCardBorder.copy(alpha = 0.5f)
+                                ),
+                                modifier = Modifier.clickable {
+                                    offsetMinutes = pMinutes
+                                    customOffsetInputStr = pMinutes.toString()
+                                }
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = if (isSelected) ActiveGreen else TextLight,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Action Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, SpaceCardBorder)
+                    ) {
+                        Text("Cancel", color = TextLight, fontWeight = FontWeight.SemiBold)
+                    }
+
+                    Button(
+                        onClick = {
+                            val hour12Val = hour12SelectedIndex + 1
+                            val minuteVal = minuteSelectedIndex
+                            val amPmVal = amPmSelectedIndex == 1
+                            val finalHour24 = when {
+                                amPmVal && hour12Val < 12 -> hour12Val + 12
+                                !amPmVal && hour12Val == 12 -> 0
+                                else -> hour12Val
+                            }
+                            val formattedTime = String.format(Locale.getDefault(), "%02d:%02d", finalHour24, minuteVal)
+                            onSave(editTitle, formattedTime, offsetMinutes, isAlertEnabled)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ActiveGreen),
+                        modifier = Modifier.weight(1.2f).testTag("save_todo_alarm_config"),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Save Config", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// -------------------------------------------------------------
 // TAB 1: REDESIGNED JOURNEY MAP SCREEN (BOTTOM-TO-TOP)
 // -------------------------------------------------------------
 @Composable
@@ -611,23 +1635,7 @@ fun JourneyMapScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = if (isDark) {
-                        listOf(
-                            Color(0xFF0F0A1D), // Elegant deep midnight lilac
-                            Color(0xFF1B122B), // Cosmic amethyst
-                            Color(0xFF0F0A1D)
-                        )
-                    } else {
-                        listOf(
-                            Color(0xFFFFFFFF), // Pure white light mode base
-                            Color(0xFFF3EEFD), // Very soft lilac glow accent
-                            Color(0xFFFFFFFF)
-                        )
-                    }
-                )
-            )
+            .background(if (isDark) Color.Black else Color.White)
     ) {
         // Redesigned Top Header Panel matching Figma Dark Purple vibe exactly
         Box(
@@ -1325,7 +2333,38 @@ fun SettingsScreen(viewModel: JourneyViewModel, nodes: List<MilestoneNode>) {
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // Wanderer Traveler profile card
+        // Profile Customization Card
+        val cropScale by viewModel.cropScale.collectAsState()
+        val cropOffsetX by viewModel.cropOffsetX.collectAsState()
+        val cropOffsetY by viewModel.cropOffsetY.collectAsState()
+
+        val initials = remember(userName) {
+            val trimmed = userName.trim()
+            if (trimmed.isEmpty()) {
+                "JP"
+            } else {
+                val parts = trimmed.split(Regex("\\s+"))
+                if (parts.size >= 2) {
+                    (parts[0].take(1) + parts[1].take(1)).uppercase()
+                } else {
+                    trimmed.take(2).uppercase()
+                }
+            }
+        }
+
+        var tempUriToCrop by remember { mutableStateOf<String?>(null) }
+        var showMenuDialog by remember { mutableStateOf(false) }
+
+        val galleryLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.GetContent()
+        ) { uri ->
+            if (uri != null) {
+                tempUriToCrop = uri.toString()
+            }
+        }
+
+        var editNameText by remember(userName) { mutableStateOf(userName) }
+
         Surface(
             color = SpaceCardBg,
             shape = RoundedCornerShape(16.dp),
@@ -1337,32 +2376,81 @@ fun SettingsScreen(viewModel: JourneyViewModel, nodes: List<MilestoneNode>) {
                 modifier = Modifier.padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Circle Avatar
+                // Interactive avatar plate
                 Box(
                     modifier = Modifier
-                        .size(72.dp)
-                        .clip(CircleShape)
-                        .background(
-                            Brush.linearGradient(
-                                colors = listOf(ActiveGreen, AccentCyan)
-                            )
-                        ),
+                        .size(88.dp)
+                        .clickable {
+                            showMenuDialog = true
+                        },
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = "JP",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            color = Color.White,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 26.sp
+                    // Outer ring base container
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(CircleShape)
+                            .background(
+                                if (customAvatarUri.isNotBlank()) {
+                                    Color.Transparent
+                                } else {
+                                    ActiveGreen
+                                }
+                            )
+                            .border(2.dp, ActiveGreen, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (customAvatarUri.isNotBlank()) {
+                            AsyncImage(
+                                model = customAvatarUri,
+                                contentDescription = "Custom User Avatar Picture",
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        scaleX = cropScale
+                                        scaleY = cropScale
+                                        translationX = cropOffsetX * (88f / 200f)
+                                        translationY = cropOffsetY * (88f / 200f)
+                                    },
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            Text(
+                                text = initials,
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    color = Color.Black,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 32.sp
+                                )
+                            )
+                        }
+                    }
+
+                    // A subtle plus badge overlay on the bottom right
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .background(ActiveGreen, CircleShape)
+                            .border(1.5.dp, if (isDark) Color.Black else Color.White, CircleShape)
+                            .align(Alignment.BottomEnd)
+                            .clickable {
+                                showMenuDialog = true
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Edit photo options",
+                            tint = Color.Black,
+                            modifier = Modifier.size(16.dp)
                         )
-                    )
+                    }
                 }
-                
-                Spacer(modifier = Modifier.height(12.dp))
-                
+
+                Spacer(modifier = Modifier.height(14.dp))
+
                 Text(
-                    text = "Journey Pioneer \uD83C\uDF1F",
+                    text = userName,
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.ExtraBold,
                         color = TextLight
@@ -1372,9 +2460,147 @@ fun SettingsScreen(viewModel: JourneyViewModel, nodes: List<MilestoneNode>) {
                     text = "Lvl 2 Pathfinder • Pro Member",
                     style = MaterialTheme.typography.bodySmall.copy(
                         color = TextMuted
+                    ),
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+
+                HorizontalDivider(color = SpaceCardBorder.copy(alpha = 0.5f), modifier = Modifier.padding(bottom = 16.dp))
+
+                // -----------------------------------------------------------------
+                // Editable Name input
+                // -----------------------------------------------------------------
+                val isNameError = editNameText.trim().isEmpty()
+                val showSaveButton = editNameText.trim() != userName && !isNameError
+
+                OutlinedTextField(
+                    value = editNameText,
+                    onValueChange = {
+                        editNameText = it
+                    },
+                    label = { Text("Set Display Name", color = if (isNameError) Color.Red else TextMuted) },
+                    singleLine = true,
+                    maxLines = 1,
+                    isError = isNameError,
+                    supportingText = {
+                        if (isNameError) {
+                            Text(
+                                text = "A name needs to be added",
+                                color = Color.Red,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    },
+                    trailingIcon = {
+                        if (showSaveButton) {
+                            IconButton(
+                                onClick = {
+                                    viewModel.updateUserName(editNameText.trim())
+                                },
+                                modifier = Modifier.testTag("save_profile_name_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Save,
+                                    contentDescription = "Save display name",
+                                    tint = ActiveGreen
+                                )
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("profile_name_input"),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TextLight,
+                        unfocusedTextColor = TextLight,
+                        focusedBorderColor = ActiveGreen,
+                        unfocusedBorderColor = SpaceCardBorder,
+                        errorBorderColor = Color.Red,
+                        cursorColor = ActiveGreen,
+                        focusedLabelColor = ActiveGreen,
+                        unfocusedLabelColor = TextMuted
                     )
                 )
             }
+        }
+
+        // Profile Menu Dialog
+        if (showMenuDialog) {
+            androidx.compose.ui.window.Dialog(onDismissRequest = { showMenuDialog = false }) {
+                Surface(
+                    color = SpaceCardBg,
+                    shape = RoundedCornerShape(24.dp),
+                    border = BorderStroke(1.dp, SpaceCardBorder),
+                    modifier = Modifier.fillMaxWidth().padding(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "Profile Picture",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                color = TextLight,
+                                fontWeight = FontWeight.Black
+                            ),
+                            modifier = Modifier.padding(bottom = 20.dp)
+                        )
+
+                        Button(
+                            onClick = {
+                                showMenuDialog = false
+                                galleryLauncher.launch("image/*")
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("add_profile_pic_btn"),
+                            colors = ButtonDefaults.buttonColors(containerColor = ActiveGreen),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Add Profile Picture", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+
+                        if (customAvatarUri.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Button(
+                                onClick = {
+                                    showMenuDialog = false
+                                    viewModel.removeCustomAvatar()
+                                },
+                                modifier = Modifier.fillMaxWidth().testTag("remove_profile_pic_btn"),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = null, tint = Color.White)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Remove Profile Picture", color = Color.White, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        OutlinedButton(
+                            onClick = { showMenuDialog = false },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, SpaceCardBorder)
+                        ) {
+                            Text("Cancel", color = TextLight)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Crop Tool Dialog
+        tempUriToCrop?.let { uriString ->
+            CropImageDialog(
+                imageUri = uriString,
+                onDismiss = { tempUriToCrop = null },
+                onCropApplied = { scale, x, y ->
+                    viewModel.setCustomAvatarUri(uriString)
+                    viewModel.updateCropSettings(scale, x, y)
+                    tempUriToCrop = null
+                }
+            )
         }
 
         Spacer(modifier = Modifier.height(20.dp))
@@ -3128,8 +4354,8 @@ fun CustomVideoPlayerControlsContainer(
                         mp.isLooping = false // Disable looping as requested
                         mp.setVolume(1f, 1f) // high quality sound with volume
                         durationMs = mp.duration
-                        start()
-                        isPlaying = true
+                        seekTo(1) // Load the first frame as a visual thumbnail preview without playing
+                        isPlaying = false
                     }
                     setOnCompletionListener {
                         isPlaying = false
@@ -3500,5 +4726,177 @@ private fun getXCoordinateFraction(id: Int): Float {
         0.0f -> 0.5f    // Center column center
         0.35f -> 0.72f  // Right column center
         else -> 0.5f
+    }
+}
+
+@Composable
+fun CropImageDialog(
+    imageUri: String,
+    onDismiss: () -> Unit,
+    onCropApplied: (scale: Float, offsetX: Float, offsetY: Float) -> Unit
+) {
+    var scale by remember { mutableStateOf(1f) }
+    var offsetX by remember { mutableStateOf(0f) }
+    var offsetY by remember { mutableStateOf(0f) }
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = Color(0xFF121212), // High precision dark theme viewport
+            border = BorderStroke(1.dp, Color(0xFF242424))
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(24.dp)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "✂️ Crop & Align Picture",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Drag the photo directly inside the circle, or use the zoom slider below to adjust your profile image. The shaded area will be cropped.",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = Color(0xFF9E9E9E),
+                        textAlign = TextAlign.Center
+                    ),
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Interactive Crop Viewport box (200.dp square)
+                Box(
+                    modifier = Modifier
+                        .size(200.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black)
+                        .pointerInput(scale) {
+                            detectDragGestures { change, dragAmount ->
+                                change.consume()
+                                offsetX += dragAmount.x
+                                offsetY += dragAmount.y
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    // Image with current user-defined transformation matrix
+                    AsyncImage(
+                        model = imageUri,
+                        contentDescription = "Editing image view",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                scaleX = scale
+                                scaleY = scale
+                                translationX = offsetX
+                                translationY = offsetY
+                            },
+                        contentScale = ContentScale.Crop
+                    )
+
+                    // Overlay Mask detailing exactly what is being cut!
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                // Enable off-screen rendering to allow transparency blending/clearing of the cutout
+                                compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
+                            }
+                    ) {
+                        // 1. Dark semi-transparent overall scrim
+                        drawRect(color = Color.Black.copy(alpha = 0.75f))
+
+                        // 2. Clear out the central circle to let the avatar content shine at 100% full brightness
+                        drawCircle(
+                            color = Color.Transparent,
+                            radius = size.minDimension / 2f - 4f,
+                            blendMode = androidx.compose.ui.graphics.BlendMode.Clear
+                        )
+
+                        // 3. Crisp white circular crop border showing exactly which content would be cut
+                        drawCircle(
+                            color = Color.White,
+                            radius = size.minDimension / 2f - 4f,
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Zoom Control Label
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ZoomIn,
+                        contentDescription = "Zoom Slider Icon",
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Zoom multiplier: ${String.format("%.1f", scale)}x",
+                        style = MaterialTheme.typography.labelMedium.copy(color = Color.White)
+                    )
+                }
+
+                Slider(
+                    value = scale,
+                    onValueChange = { scale = it },
+                    valueRange = 1f..4f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = AccentCyan,
+                        activeTrackColor = AccentCyan,
+                        inactiveTrackColor = Color(0xFF333333)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Buttons: Reset & Apply
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            scale = 1f
+                            offsetX = 0f
+                            offsetY = 0f
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF242424)),
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Reset", color = Color.White)
+                    }
+
+                    Button(
+                        onClick = {
+                            onCropApplied(scale, offsetX, offsetY)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
+                        modifier = Modifier.weight(1.5f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Apply Crop", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
     }
 }
