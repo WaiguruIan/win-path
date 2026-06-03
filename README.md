@@ -1,21 +1,40 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+Win Path
+A premium, privacy-first, and local-first achievement tracker designed to turn your daily victories into a stunning, interactive roadmap. Stop tracking your life in boring text lists—start mapping your journey across a beautiful 365-day serpentine path.
 
-# Run and deploy your AI Studio app
+🚀 Features
+Visual Milestone Mapping: Watch your progress come alive on a dynamic, neon-accented serpentine path. Each achievement drops a node, building your personal roadmap step-by-step.
 
-This contains everything you need to run your app locally.
+Multimedia Documentation: Capture your achievements through photos, videos and audio recordings or document them as detailed text notes.
 
-View your app in AI Studio: https://ai.studio/apps/d7b9498c-8605-44a6-b662-295377fa476b
+Local-First Architecture: Your data belongs to you. Built with a strict offline-first design philosophy, ensuring absolute privacy, speed, and complete control over your records without relying on external cloud databases.
 
-## Run Locally
+Secure Multimedia Logs: Verify and look back on your wins by attaching rich media—securely locking in text notes, photos, and audio clips directly to your milestone nodes.
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+Gamified Daily Progression: Built specifically around a 365-day committing layout designed to reward consistency and help you visualize long-term streaks.
 
+🛠️ Tech Stack
+Frontend / UI: Jetpack Compose (Android) & React / Tailwind CSS (Web Dashboard components).
 
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
+Animations: Framer Motion (Transitions) & Custom SVGs for a premium, tactile dark-mode aesthetic.
+
+Architecture: Offline-first, local SQLite / Room database storage architecture prioritizing biometric/local device security.
+
+📦 Releases & Installation
+Latest Production Ready
+You can download the compiled, fully functional app bundle directly from the Releases section of this repository.
+
+Download the APK: Go to the latest release and download win-path-app.apk directly to your Android device.
+
+Enable Unknown Sources: Because this APK is hosted outside the Google Play Store, Android requires explicit deployment permission:
+
+Navigate to your device Settings > Apps > Special app access.
+
+Choose Install unknown apps.
+
+Toggle the switch to Allow for the specific application you used to download the file (e.g., Chrome or your local File Manager).
+
+Install the App: Open your device's file manager, locate the win-path-app.apk file in your Downloads folder, tap it, and select Install.
+
+Bypass Play Protect (If Prompted): If Google Play Protect displays an "Unknown Developer" or "Blocked by Play Protect" alert, simply tap More details, then select Install anyway to finish the setup.
+
+Minimum Requirements: Android 8.0 (API level 26) or higher.
