@@ -24,8 +24,7 @@ A premium, privacy-first, and local-first achievement tracker designed to turn y
 
 ## 📦 Releases & Installation
 
-### Option 1: Install the Pre-Built APK (Recommended)
-You can download the compiled, fully functional app bundle directly from the **[Releases](../../releases)** section of this repository.
+Download the compiled, fully functional app bundle directly from the **[Releases](../../releases)** section of this repository.
 
 1. **Download the APK:** Go to the latest release and download `win-path.apk` directly to your Android device.
 2. **Enable Unknown Sources:** Because this APK is hosted outside the Google Play Store, Android requires explicit deployment permission:
